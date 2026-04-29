@@ -1,0 +1,13 @@
+<Manifest>
+ <ScripterInstanceName>AMPACT-YardSign</ScripterInstanceName>
+ <SwitchVersion>25.11</SwitchVersion>
+ <ScriptPackageFormatVersion>1.0</ScriptPackageFormatVersion>
+ <ScriptPasswordProtected>No</ScriptPasswordProtected>
+ <ScriptPackageType>Script</ScriptPackageType>
+ <ScriptDeclarationFile>AMPACT-YardSign.xml</ScriptDeclarationFile>
+ <ScriptProgramFiles>
+  <ScriptProgramFile ScriptLanguage="NodeJSScript">main.ts</ScriptProgramFile>
+ </ScriptProgramFiles>
+ <ScriptIconFile/>
+ <LocalizationItems/>
+</Manifest>

@@ -1,0 +1,12 @@
+{
+    "dependencies": {
+    },
+    "devDependencies": {
+        "@types/node": "20.12.2",
+        "@types/switch-scripting": "https://github.com/enfocus-switch/types-switch-scripting/archive/refs/tags/v24.1.1-final.tar.gz"
+    },
+    "license": "UNLICENSED",
+    "name": "ampact-yardsign",
+    "private": true,
+    "version": "0.0.1"
+}
