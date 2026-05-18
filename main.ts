@@ -165,12 +165,9 @@ function buildSOAPEnvelope(
         <Ships>
             <Shipment>
                 <JobNumber>${epmsJobNumber}</JobNumber>
-                <Customer>${customer}</Customer>
-                <PropagoJobNumber>${propagoJobNumber}</PropagoJobNumber>
-                <BeginDate>${beginDate}</BeginDate>
-                <EndDate>${endDate}</EndDate>
                 <ShipVia>${epmsShipData.ShipVia || "FedEx"}</ShipVia>
                 <ShipViaService>${epmsShipData.ShipViaService || ""}</ShipViaService>
+                <ShipDate>${endDate}</ShipDate>
                 <Packages>${packagesXML}
                 </Packages>
             </Shipment>
