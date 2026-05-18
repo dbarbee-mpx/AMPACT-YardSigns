@@ -19,15 +19,36 @@ async function jobArrived(s: Switch, flowElement: FlowElement, job: Job) {
             // If not XML or parse fails, continue without error
         }
         
-        // If Yard Signs item found, set the LargeBoxFee in private data
-        if (hasYardSigns) {
-            await job.setPrivateData("LargeBoxFee", 15);
-        }
+        // Determine LargeBoxFee value
+        const largeBoxFee = hasYardSigns ? 15 : 0;
+        
+        // Generate AdditionalCharges dataset
+        await generateAdditionalChargesDataset(job, largeBoxFee);
         
         // Build ToEPMS SOAP envelope for API upload
-        await buildToEPMSDataset(s, flowElement, job);
+        await buildToEPMSDataset(s, flowElement, job, largeBoxFee);
     } catch (error: any) {
         job.fail("Error processing job: %1", [error?.message || String(error)]);
+    }
+}
+
+/**
+ * Generates the AdditionalCharges dataset containing only the LargeBoxFee
+ */
+async function generateAdditionalChargesDataset(job: Job, largeBoxFee: number): Promise<void> {
+    try {
+        // Create AdditionalCharges dataset with only LargeBoxFee
+        const additionalChargesData = {
+            LargeBoxFee: largeBoxFee
+        };
+        
+        // Store in private data
+        await job.setPrivateData("AdditionalCharges", additionalChargesData);
+        
+        await job.log(LogLevel.Info, "AdditionalCharges dataset generated with LargeBoxFee: %1", [String(largeBoxFee)]);
+    } catch (error: any) {
+        await job.log(LogLevel.Error, "Error generating AdditionalCharges dataset: %1", [error?.message || String(error)]);
+        throw error;
     }
 }
 
@@ -35,7 +56,7 @@ async function jobArrived(s: Switch, flowElement: FlowElement, job: Job) {
  * Builds the ToEPMS dataset in SOAP format for EPMS API upload
  * Handles multiple packages from FedEx shipment data
  */
-async function buildToEPMSDataset(s: Switch, flowElement: FlowElement, job: Job) {
+async function buildToEPMSDataset(s: Switch, flowElement: FlowElement, job: Job, largeBoxFee: number) {
     try {
         // Get job path and read XML data
         const jobPath = await job.get(AccessLevel.ReadOnly);
@@ -49,10 +70,6 @@ async function buildToEPMSDataset(s: Switch, flowElement: FlowElement, job: Job)
         const propagoJobNumber = xmlDoc.evaluate("//PropagoJobNumber/text()") || "";
         const beginDate = xmlDoc.evaluate("//BeginDate/text()") || new Date().toLocaleDateString();
         const endDate = xmlDoc.evaluate("//EndDate/text()") || new Date().toLocaleDateString();
-        
-        // Get LargeBoxFee from private data if set
-        const largeBoxFeeData = await job.getPrivateData("LargeBoxFee");
-        const largeBoxFee = largeBoxFeeData && largeBoxFeeData.length > 0 ? largeBoxFeeData[0]?.value || 0 : 0;
         
         // Get stored FedEx shipment data if available
         let fedExDataJson = "";
@@ -75,7 +92,7 @@ async function buildToEPMSDataset(s: Switch, flowElement: FlowElement, job: Job)
             fedExData.Packages || [],
             {},
             {},
-            Number(largeBoxFee),
+            largeBoxFee,
             { Username: "test", Password: "test" }
         );
         
