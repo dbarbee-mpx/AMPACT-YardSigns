@@ -22,6 +22,10 @@ async function jobArrived(s: Switch, flowElement: FlowElement, job: Job) {
 /**
  * Builds the ToEPMS dataset in SOAP format for EPMS API upload
  * Handles multiple packages from FedEx shipment data
+ * 
+ * This script processes the PropagoOrder dataset and adds AdditionalCharges
+ * if any order line item has itemType "Yard Signs", the fee is set to 15.
+ * Otherwise, the default fee is 0.
  */
 async function buildToEPMSDataset(s: Switch, job: Job) {
     try {
@@ -117,19 +121,16 @@ function buildSOAPEnvelope(
   <soap:Body>
     <UpdateShipmentByJobNumber xmlns="http://localhost/EnterpriseWebService/Enterprise Connect">
         <Credentials>
-            <Username>${credentials.Username}</Username>
-            <Password>${credentials.Password}</Password>
+            <Username>test</Username>
+            <Password>test</Password>
         </Credentials>
         <strJobNumber>${epmsJobNumber}</strJobNumber>
         <Ships>
             <Shipment>
                 <JobNumber>${epmsJobNumber}</JobNumber>
-                <Customer>${customer}</Customer>
-                <PropagoJobNumber>${propagoJobNumber}</PropagoJobNumber>
-                <BeginDate>${beginDate}</BeginDate>
-                <EndDate>${endDate}</EndDate>
                 <ShipVia>${epmsShipData.ShipVia || "FedEx"}</ShipVia>
                 <ShipViaService>${epmsShipData.ShipViaService || ""}</ShipViaService>
+                <ShipDate>${endDate}</ShipDate>
                 <Packages>${packagesXML}
                 </Packages>
             </Shipment>
