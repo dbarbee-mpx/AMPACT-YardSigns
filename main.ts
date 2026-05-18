@@ -28,8 +28,11 @@ async function buildToEPMSDataset(s: Switch, job: Job) {
         // Get shipment data from job metadata
         const fedExData = job.get("FedExShipmentData") || {};
         const epmsShipData = job.get("EPMSShipData") || {};
-        const additionalCharges = job.get("AdditionalCharges") || { LargeBoxFee: 0 };
+        const additionalCharges = job.get("AdditionalCharges") || {};
         const credentials = job.get("APICredentials") || { Username: "test", Password: "test" };
+        
+        // Get the LargeBoxFee from job (only applies to first package)
+        const largeBoxFee = job.get("LargeBoxFee") || 0;
         
         // Extract shipment info
         const epmsJobNumber = fedExData.EPMSjobNumber || job.get("JobNumber");
@@ -49,6 +52,7 @@ async function buildToEPMSDataset(s: Switch, job: Job) {
             packages,
             epmsShipData,
             additionalCharges,
+            largeBoxFee,
             credentials
         );
         
@@ -68,6 +72,7 @@ async function buildToEPMSDataset(s: Switch, job: Job) {
 /**
  * Constructs the complete SOAP XML envelope for EPMS API
  * Includes for-loop logic to handle multiple packages
+ * LargeBoxFee is only applied to the first package
  */
 function buildSOAPEnvelope(
     epmsJobNumber: string,
@@ -78,16 +83,21 @@ function buildSOAPEnvelope(
     packages: any[],
     epmsShipData: any,
     additionalCharges: any,
+    largeBoxFee: number,
     credentials: any
 ): string {
     // Build package elements with for-loop iteration
     let packagesXML = "";
     for (let i = 0; i < packages.length; i++) {
         const pkg = packages[i];
+        
+        // Only add LargeBoxFee to the first package (i === 0)
+        const boxFee = i === 0 ? largeBoxFee : 0;
+        
         const freightCost = calculateFreightCost(
             pkg.LTOT || 0,
             epmsShipData.FreightCost || 0,
-            additionalCharges.LargeBoxFee || 0
+            boxFee
         );
         
         packagesXML += `
