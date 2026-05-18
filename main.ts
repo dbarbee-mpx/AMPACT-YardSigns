@@ -1,76 +1,94 @@
 async function jobArrived(s: Switch, flowElement: FlowElement, job: Job) {
-    // Get all items in the job
-    const items = await job.getItems();
-    
-    // Check if any item has itemType == 'Yard Signs' AND orderQty > 0
-    for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        const itemType = await item.getString("itemType");
-        const orderQty = await item.getNumber("orderQty");
+    try {
+        // Get job path to read file contents
+        const jobPath = await job.get(AccessLevel.ReadOnly);
         
-        // If both conditions are met, set LargeBoxFee to 15
-        if (itemType === "Yard Signs" && orderQty > 0) {
-            await job.setNumber("LargeBoxFee", 15);
-            break;
+        // Parse XML to check for Yard Signs
+        let hasYardSigns = false;
+        
+        // Try to read and parse as XML if it's a data file
+        try {
+            const xmlDoc = XmlDocument.open(jobPath);
+            const itemType = xmlDoc.evaluate("//itemType/text()");
+            const orderQty = xmlDoc.evaluate("//orderQty/text()");
+            
+            if (itemType === "Yard Signs" && orderQty && Number(orderQty) > 0) {
+                hasYardSigns = true;
+            }
+        } catch (e) {
+            // If not XML or parse fails, continue without error
         }
+        
+        // If Yard Signs item found, set the LargeBoxFee in private data
+        if (hasYardSigns) {
+            await job.setPrivateData("LargeBoxFee", 15);
+        }
+        
+        // Build ToEPMS SOAP envelope for API upload
+        await buildToEPMSDataset(s, flowElement, job);
+    } catch (error: any) {
+        job.fail("Error processing job: %1", [error?.message || String(error)]);
     }
-    
-    // Build ToEPMS SOAP envelope for API upload
-    await buildToEPMSDataset(s, job);
 }
 
 /**
  * Builds the ToEPMS dataset in SOAP format for EPMS API upload
  * Handles multiple packages from FedEx shipment data
  */
-async function buildToEPMSDataset(s: Switch, job: Job) {
+async function buildToEPMSDataset(s: Switch, flowElement: FlowElement, job: Job) {
     try {
-        // Get shipment data from job metadata
-        const fedExDataJson = await job.getString("FedExShipmentData") || "{}";
-        const epmsShipDataJson = await job.getString("EPMSShipData") || "{}";
-        const additionalChargesJson = await job.getString("AdditionalCharges") || "{}";
-        const credentialsJson = await job.getString("APICredentials") || '{"Username":"test","Password":"test"}';
+        // Get job path and read XML data
+        const jobPath = await job.get(AccessLevel.ReadOnly);
         
-        // Parse JSON strings to objects
-        const fedExData = JSON.parse(fedExDataJson);
-        const epmsShipData = JSON.parse(epmsShipDataJson);
-        const additionalCharges = JSON.parse(additionalChargesJson);
-        const credentials = JSON.parse(credentialsJson);
+        // Parse job as XML
+        let xmlDoc = XmlDocument.open(jobPath);
         
-        // Get the LargeBoxFee from job (only applies to first package)
-        const largeBoxFee = await job.getNumber("LargeBoxFee") || 0;
+        // Extract shipment info using XPath
+        const epmsJobNumber = xmlDoc.evaluate("//EPMSjobNumber/text()") || job.getId();
+        const customer = xmlDoc.evaluate("//Customer/text()") || "AMPACT";
+        const propagoJobNumber = xmlDoc.evaluate("//PropagoJobNumber/text()") || "";
+        const beginDate = xmlDoc.evaluate("//BeginDate/text()") || new Date().toLocaleDateString();
+        const endDate = xmlDoc.evaluate("//EndDate/text()") || new Date().toLocaleDateString();
         
-        // Extract shipment info
-        const epmsJobNumber = fedExData.EPMSjobNumber || (await job.getString("JobNumber"));
-        const customer = fedExData.Customer || "AMPACT";
-        const propagoJobNumber = fedExData.PropagoJobNumber || "";
-        const beginDate = fedExData.BeginDate || new Date().toLocaleDateString();
-        const endDate = fedExData.EndDate || new Date().toLocaleDateString();
-        const packages = fedExData.Packages || [];
+        // Get LargeBoxFee from private data if set
+        const largeBoxFeeData = await job.getPrivateData("LargeBoxFee");
+        const largeBoxFee = largeBoxFeeData && largeBoxFeeData.length > 0 ? largeBoxFeeData[0]?.value || 0 : 0;
+        
+        // Get stored FedEx shipment data if available
+        let fedExDataJson = "";
+        try {
+            const fedExPrivateData = await job.getPrivateData("FedExShipmentData");
+            fedExDataJson = fedExPrivateData && fedExPrivateData.length > 0 ? fedExPrivateData[0]?.value : "{}";
+        } catch (e) {
+            fedExDataJson = "{}";
+        }
+        
+        const fedExData = typeof fedExDataJson === "string" ? JSON.parse(fedExDataJson) : fedExDataJson;
         
         // Build SOAP envelope
         let soapBody = buildSOAPEnvelope(
-            epmsJobNumber,
-            customer,
-            propagoJobNumber,
-            beginDate,
-            endDate,
-            packages,
-            epmsShipData,
-            additionalCharges,
-            largeBoxFee,
-            credentials
+            String(epmsJobNumber),
+            String(customer),
+            String(propagoJobNumber),
+            String(beginDate),
+            String(endDate),
+            fedExData.Packages || [],
+            {},
+            {},
+            Number(largeBoxFee),
+            { Username: "test", Password: "test" }
         );
         
-        // Store the SOAP body in job metadata for API submission
-        await job.setString("ToEPMS_SOAPEnvelope", soapBody);
+        // Store the SOAP body in private data for API submission
+        await job.setPrivateData("ToEPMS_SOAPEnvelope", soapBody);
         
         // Log successful dataset construction
-        s.logger.info(`ToEPMS dataset built successfully for job ${epmsJobNumber} with ${packages.length} package(s)`);
+        await job.log(LogLevel.Info, "ToEPMS dataset built successfully for job %1 with %2 package(s)", 
+            [String(epmsJobNumber), String(fedExData.Packages?.length || 0)]);
         
         return soapBody;
     } catch (error: any) {
-        s.logger.error(`Error building ToEPMS dataset: ${error?.message || error}`);
+        await job.log(LogLevel.Error, "Error building ToEPMS dataset: %1", [error?.message || String(error)]);
         throw error;
     }
 }
