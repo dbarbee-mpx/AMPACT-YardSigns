@@ -1,188 +1,152 @@
-async function jobArrived(s: Switch, flowElement: FlowElement, job: Job) {
+import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const writeFile = promisify(fs.writeFile);
+
+/**
+ * Enfocus Switch 25.11 - Yard Signs Large Box Fee Calculator
+ * 
+ * This script processes the PropagoOrder dataset and creates an AdditionalCharges dataset
+ * with a LargeBoxFee. If any order line item has itemType "Yard Signs", the fee is set to 15.
+ * Otherwise, the default fee is 0.
+ */
+
+/**
+ * Main entry point - triggered when a job arrives in the flow element
+ */
+async function jobArrived(s: Switch, flowElement: FlowElement, job: Job): Promise<void> {
     try {
-        // Get job path to read file contents
-        const jobPath = await job.get(AccessLevel.ReadOnly);
-        
-        // Parse XML to check for Yard Signs
-        let hasYardSigns = false;
-        
-        // Try to read and parse as XML if it's a data file
-        try {
-            const xmlDoc = XmlDocument.open(jobPath);
-            const itemType = xmlDoc.evaluate("//itemType/text()");
-            const orderQty = xmlDoc.evaluate("//orderQty/text()");
-            
-            if (itemType === "Yard Signs" && orderQty && Number(orderQty) > 0) {
-                hasYardSigns = true;
+        await flowElement.log(LogLevel.Debug, `Processing job: %1`, [job.getName()]);
+
+        // Get the PropagoOrder dataset from the job
+        const datasets = await job.listDatasets();
+        await flowElement.log(LogLevel.Debug, `Available datasets: %1`, [datasets.length.toString()]);
+
+        const propagoDataset = datasets.find(ds => ds.name === 'PropagoOrder');
+
+        if (!propagoDataset) {
+            await flowElement.log(LogLevel.Warning, 'PropagoOrder dataset not found for job: %1', [job.getName()]);
+            // Set default fee of 0 even if dataset is missing
+            await createAdditionalChargesDataset(s, flowElement, job, 0);
+            await job.sendToSingle();
+            return;
+        }
+
+        // Get the PropagoOrder dataset content
+        const datasetPath = await job.getDataset('PropagoOrder', AccessLevel.ReadOnly);
+        await flowElement.log(LogLevel.Debug, `Retrieved PropagoOrder dataset from: %1`, [datasetPath]);
+
+        // Read and parse the dataset
+        const datasetContent = fs.readFileSync(datasetPath, 'utf-8');
+        const propagoData = JSON.parse(datasetContent);
+
+        await flowElement.log(LogLevel.Debug, `Parsed PropagoOrder dataset successfully`);
+
+        // Extract orderLines from the dataset
+        const orderLines = propagoData?.results?.orderLines || [];
+        await flowElement.log(LogLevel.Debug, `Found %1 order lines`, [orderLines.length.toString()]);
+
+        // Check if any order line has itemType "Yard Signs"
+        let largeBoxFee = 0;
+        let yardSignsFound = false;
+
+        for (let i = 0; i < orderLines.length; i++) {
+            const orderLine = orderLines[i];
+            const itemType = orderLine?.part?.itemType || '';
+
+            await flowElement.log(LogLevel.Debug, `Order line %1: itemType = %2`, [i.toString(), itemType]);
+
+            if (itemType === 'Yard Signs') {
+                yardSignsFound = true;
+                largeBoxFee = 15;
+                await flowElement.log(LogLevel.Info, `Yard Signs detected at order line %1, setting LargeBoxFee to 15`, [i.toString()]);
+                break; // Found Yard Signs, no need to continue
             }
-        } catch (e) {
-            // If not XML or parse fails, continue without error
         }
-        
-        // Determine LargeBoxFee value
-        const largeBoxFee = hasYardSigns ? 15 : 0;
-        
-        // Generate AdditionalCharges dataset
-        await generateAdditionalChargesDataset(job, largeBoxFee);
-        
-        // Build ToEPMS SOAP envelope for API upload
-        await buildToEPMSDataset(s, flowElement, job, largeBoxFee);
-    } catch (error: any) {
-        job.fail("Error processing job: %1", [error?.message || String(error)]);
+
+        if (!yardSignsFound) {
+            await flowElement.log(LogLevel.Info, `No Yard Signs found in order lines, LargeBoxFee remains 0`);
+        }
+
+        // Create the AdditionalCharges dataset
+        await createAdditionalChargesDataset(s, flowElement, job, largeBoxFee);
+
+        // Route the job
+        await job.sendToSingle();
+        await flowElement.log(LogLevel.Info, `Job %1 processed successfully with LargeBoxFee: %2`, [job.getName(), largeBoxFee.toString()]);
+
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await flowElement.log(LogLevel.Error, `Error processing job %1: %2`, [job.getName(), errorMessage]);
+        job.fail(`Failed to process order lines: ${errorMessage}`, []);
     }
 }
 
 /**
- * Generates the AdditionalCharges dataset containing only the LargeBoxFee
+ * Creates the AdditionalCharges dataset with the calculated LargeBoxFee
  */
-async function generateAdditionalChargesDataset(job: Job, largeBoxFee: number): Promise<void> {
+async function createAdditionalChargesDataset(
+    s: Switch,
+    flowElement: FlowElement,
+    job: Job,
+    largeBoxFee: number
+): Promise<void> {
     try {
-        // Create AdditionalCharges dataset with only LargeBoxFee
-        const additionalChargesData = {
-            LargeBoxFee: largeBoxFee
+        // Create the AdditionalCharges dataset structure
+        const additionalCharges = {
+            AdditionalCharges: {
+                LargeBoxFee: largeBoxFee.toString()
+            }
         };
-        
-        // Store in private data
-        await job.setPrivateData("AdditionalCharges", additionalChargesData);
-        
-        await job.log(LogLevel.Info, "AdditionalCharges dataset generated with LargeBoxFee: %1", [String(largeBoxFee)]);
-    } catch (error: any) {
-        await job.log(LogLevel.Error, "Error generating AdditionalCharges dataset: %1", [error?.message || String(error)]);
+
+        // Create a temporary file for the dataset
+        const tempDir = await flowElement.createPathWithName('AdditionalCharges', true);
+        const datasetFilePath = path.join(tempDir, 'AdditionalCharges.json');
+
+        // Write the dataset to a file
+        await writeFile(datasetFilePath, JSON.stringify(additionalCharges, null, 2));
+
+        await flowElement.log(LogLevel.Debug, `Created temporary dataset file at: %1`, [datasetFilePath]);
+
+        // Create the dataset for the job
+        await job.createDataset('AdditionalCharges', datasetFilePath, DatasetModel.JSON);
+
+        await flowElement.log(LogLevel.Info, `AdditionalCharges dataset created with LargeBoxFee: %1`, [largeBoxFee.toString()]);
+
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await flowElement.log(LogLevel.Error, `Error creating AdditionalCharges dataset: %1`, [errorMessage]);
         throw error;
     }
 }
 
 /**
- * Builds the ToEPMS dataset in SOAP format for EPMS API upload
- * Handles multiple packages from FedEx shipment data
+ * Optional: Timer fired entry point for periodic processing
+ * Uncomment if you need to process jobs on a timer
  */
-async function buildToEPMSDataset(s: Switch, flowElement: FlowElement, job: Job, largeBoxFee: number) {
+async function timerFired(s: Switch, flowElement: FlowElement): Promise<void> {
     try {
-        // Get job path and read XML data
-        const jobPath = await job.get(AccessLevel.ReadOnly);
-        
-        // Parse job as XML
-        let xmlDoc = XmlDocument.open(jobPath);
-        
-        // Extract shipment info using XPath
-        const epmsJobNumber = xmlDoc.evaluate("//EPMSjobNumber/text()") || job.getId();
-        const customer = xmlDoc.evaluate("//Customer/text()") || "AMPACT";
-        const propagoJobNumber = xmlDoc.evaluate("//PropagoJobNumber/text()") || "";
-        const beginDate = xmlDoc.evaluate("//BeginDate/text()") || new Date().toLocaleDateString();
-        const endDate = xmlDoc.evaluate("//EndDate/text()") || new Date().toLocaleDateString();
-        
-        // Get stored FedEx shipment data if available
-        let fedExDataJson = "";
-        try {
-            const fedExPrivateData = await job.getPrivateData("FedExShipmentData");
-            fedExDataJson = fedExPrivateData && fedExPrivateData.length > 0 ? fedExPrivateData[0]?.value : "{}";
-        } catch (e) {
-            fedExDataJson = "{}";
-        }
-        
-        const fedExData = typeof fedExDataJson === "string" ? JSON.parse(fedExDataJson) : fedExDataJson;
-        
-        // Build SOAP envelope
-        let soapBody = buildSOAPEnvelope(
-            String(epmsJobNumber),
-            String(customer),
-            String(propagoJobNumber),
-            String(beginDate),
-            String(endDate),
-            fedExData.Packages || [],
-            {},
-            {},
-            largeBoxFee,
-            { Username: "test", Password: "test" }
-        );
-        
-        // Store the SOAP body in private data for API submission
-        await job.setPrivateData("ToEPMS_SOAPEnvelope", soapBody);
-        
-        // Log successful dataset construction
-        await job.log(LogLevel.Info, "ToEPMS dataset built successfully for job %1 with %2 package(s)", 
-            [String(epmsJobNumber), String(fedExData.Packages?.length || 0)]);
-        
-        return soapBody;
-    } catch (error: any) {
-        await job.log(LogLevel.Error, "Error building ToEPMS dataset: %1", [error?.message || String(error)]);
-        throw error;
+        await flowElement.log(LogLevel.Debug, `Timer fired for flow element: %1`, [flowElement.getName()]);
+        // Add any periodic processing logic here
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await flowElement.log(LogLevel.Error, `Error in timerFired: %1`, [errorMessage]);
     }
 }
 
 /**
- * Constructs the complete SOAP XML envelope for EPMS API
- * Includes for-loop logic to handle multiple packages
- * LargeBoxFee is only applied to the first package
+ * Optional: Flow start triggered entry point
+ * Uncomment if you need to initialize when the flow starts
  */
-function buildSOAPEnvelope(
-    epmsJobNumber: string,
-    customer: string,
-    propagoJobNumber: string,
-    beginDate: string,
-    endDate: string,
-    packages: any[],
-    epmsShipData: any,
-    additionalCharges: any,
-    largeBoxFee: number,
-    credentials: any
-): string {
-    // Build package elements with for-loop iteration
-    let packagesXML = "";
-    for (let i = 0; i < packages.length; i++) {
-        const pkg = packages[i];
-        
-        // Only add LargeBoxFee to the first package (i === 0)
-        const boxFee = i === 0 ? largeBoxFee : 0;
-        
-        const freightCost = calculateFreightCost(
-            pkg.LTOT || 0,
-            epmsShipData.FreightCost || 0,
-            boxFee
-        );
-        
-        packagesXML += `
-                <Package>
-                    <JobNumber>${epmsJobNumber}</JobNumber>
-                    <FreightCost>${freightCost}</FreightCost>
-                    <ShipDate>${endDate}</ShipDate>
-                    <TrackingNumber>${pkg.TrackingNumber || ""}</TrackingNumber>
-                    <ShipVia>${epmsShipData.ShipVia || "FedEx"}</ShipVia>
-                    <ShipViaService>${epmsShipData.ShipViaService || ""}</ShipViaService>
-                </Package>`;
+async function flowStartTriggered(s: Switch, flowElement: FlowElement): Promise<void> {
+    try {
+        await flowElement.log(LogLevel.Info, `Flow started: %1`, [flowElement.getName()]);
+        // Add any initialization logic here
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await flowElement.log(LogLevel.Error, `Error in flowStartTriggered: %1`, [errorMessage]);
     }
-    
-    // Construct full SOAP envelope
-    const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <UpdateShipmentByJobNumber xmlns="http://localhost/EnterpriseWebService/Enterprise Connect">
-        <Credentials>
-            <Username>${credentials.Username}</Username>
-            <Password>${credentials.Password}</Password>
-        </Credentials>
-        <strJobNumber>${epmsJobNumber}</strJobNumber>
-        <Ships>
-            <Shipment>
-                <JobNumber>${epmsJobNumber}</JobNumber>
-                <ShipVia>${epmsShipData.ShipVia || "FedEx"}</ShipVia>
-                <ShipViaService>${epmsShipData.ShipViaService || ""}</ShipViaService>
-                <ShipDate>${endDate}</ShipDate>
-                <Packages>${packagesXML}
-                </Packages>
-            </Shipment>
-        </Ships>
-    </UpdateShipmentByJobNumber>
-  </soap:Body>
-</soap:Envelope>`;
-    
-    return soapEnvelope;
 }
 
-/**
- * Calculates total freight cost from multiple sources
- * Combines FedEx base cost + EPMS surcharges + additional fees
- */
-function calculateFreightCost(fedExCost: number, epmsCost: number, additionalFee: number): number {
-    return parseFloat((fedExCost + epmsCost + additionalFee).toFixed(2));
-}
+export { jobArrived, timerFired, flowStartTriggered };
